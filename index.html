@@ -1,0 +1,1674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+<title>一锅煮不下</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  background: #1a0f0a;
+  display: flex; justify-content: center; align-items: center;
+  font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  touch-action: none;
+  overflow: hidden;
+}
+#gameCanvas {
+  display: block;
+  background: #2a1a10;
+  border-radius: 12px;
+  box-shadow: 0 0 60px rgba(200, 80, 20, 0.3);
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ============================================================
+// 一锅煮不下 - 完整游戏代码
+// ============================================================
+
+// --- Canvas Setup ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Responsive sizing
+const DESIGN_W = 480, DESIGN_H = 800;
+let scale, W, H;
+
+function resizeCanvas() {
+  const maxW = window.innerWidth, maxH = window.innerHeight;
+  const ratio = DESIGN_W / DESIGN_H;
+  let w = maxW, h = maxH;
+  if (w / h > ratio) { w = h * ratio; }
+  else { h = w / ratio; }
+  w = Math.floor(w); h = Math.floor(h);
+  if (w !== canvas.width || h !== canvas.height) {
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = DESIGN_W; canvas.height = DESIGN_H;
+  }
+  scale = DESIGN_W / w;
+  W = DESIGN_W; H = DESIGN_H;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// --- Constants ---
+const FPS = 60;
+const CELL_W = 52, CELL_H = 52;
+const POT_PAD = 16;
+const COLORS = {
+  bg: '#2a1a10',
+  potBody: '#8B4513', potInner: '#3C1F0E',
+  potRim: '#A0522D', potShadow: '#1a0f08',
+  text: '#FFF8E7', textDim: '#B8957A',
+  accent: '#FF6B35', accentGlow: '#FF4500',
+  success: '#4CAF50', warning: '#FFA726', danger: '#EF5350',
+  gold: '#FFD700',
+  gridLine: 'rgba(255,200,150,0.08)',
+  particles: ['#FF6B35','#FFA726','#FFCC02','#EF5350','#FF8A65','#FFF176'],
+  bubbles: ['rgba(255,200,150,0.5)','rgba(255,150,100,0.4)','rgba(200,220,255,0.3)']
+};
+
+// --- Ingredient Definitions ---
+const INGREDIENTS = [
+  { id: 0, name: '蟹柳', color: '#E53935', light: '#FF8A80', shape: 'rect',   w: 32, h: 10 },
+  { id: 1, name: '牛肉丸', color: '#8D6E63', light: '#BE9C91', shape: 'circle', r: 16 },
+  { id: 2, name: '金针菇', color: '#FFF9C4', light: '#FFFDE7', shape: 'thin',   w: 6,  h: 28 },
+  { id: 3, name: '豆腐泡', color: '#FFE082', light: '#FFF3C4', shape: 'square', w: 24, h: 24 },
+  { id: 4, name: '虾滑',   color: '#F48FB1', light: '#F8BBD0', shape: 'oval',  w: 30, h: 18 },
+  { id: 5, name: '鱼丸',   color: '#81D4FA', light: '#B3E5FC', shape: 'circle', r: 14 },
+  { id: 6, name: '年糕',   color: '#C8E6C9', light: '#E8F5E9', shape: 'square', w: 20, h: 28 },
+];
+
+// --- Game State ---
+const State = Object.freeze({
+  IDLE: 0,      // Waiting for player to tap
+  FALLING: 1,   // Ingredient is falling
+  LANDED: 2,    // Just landed, about to check
+  MATCHING: 3,  // Animating match removal
+  SETTLING: 4,  // Gravity settling
+  COMBO: 5,     // Chain reaction
+  OVER: 6,      // Game over
+  WIN: 7,       // Level complete
+  PAUSED: 8,
+  TUTORIAL: 9,
+});
+
+const game = {
+  state: State.IDLE,
+  grid: [],           // [row][col] = {type, id} or null
+  rows: 8,
+  cols: 6,
+  level: 1,
+  score: 0,
+  targetScore: 400,
+  highScore: parseInt(localStorage.getItem('ygzbx_high') || '0'),
+  combo: 0,
+  maxCombo: 0,
+  lShapeCount: 0,
+  totalEliminated: 0,
+
+  // Current falling ingredient
+  currentFood: null,  // { type, col, row, pixelY, pixelX, phase }
+
+  // Next food to show
+  nextFood: null,     // { type }
+
+  // Food queue (for generating next)
+  availableFoods: [],  // indices into INGREDIENTS
+
+  // Micro tools
+  shakeCount: 3,
+  tongsCount: 2,
+  undoCount: 2,
+  lastDrop: null,     // { gridSnapshot, foodType, foodCol, foodRow }
+
+  // Game flow
+  warningLevel: 0,    // 0=none, 1=80%, 2=95%
+  warningTimer: 0,
+  deadlockTimer: 0,
+  deadlockCount: 0,
+  particles: [],
+  floatingTexts: [],
+  bubbleParticles: [],
+
+  // Animations
+  animTimer: 0,
+  matchCells: [],     // cells currently being eliminated
+  matchAnimProgress: 0,
+
+  // Audio
+  musicOn: true,
+  sfxOn: true,
+  shakeOn: true,
+
+  // Tutorial
+  tutoStep: -1,       // -1 = not showing
+  tutoDone: localStorage.getItem('ygzbx_tuto') === '1',
+
+  // Stats
+  gameCount: parseInt(localStorage.getItem('ygzbx_games') || '0'),
+  leaderboard: JSON.parse(localStorage.getItem('ygzbx_lb') || '[]'),
+};
+
+// ============================================================
+// AUDIO SYSTEM
+// ============================================================
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new AudioCtx();
+}
+
+function playTone(freq, duration, type = 'sine', vol = 0.15) {
+  if (!game.sfxOn || !audioCtx) return;
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  } catch(e) {}
+}
+
+function playDrop() { playTone(220, 0.15, 'sine', 0.1); }
+function playLand() { playTone(160, 0.1, 'triangle', 0.08); }
+function playMatch() { playTone(523, 0.12, 'sine', 0.12); setTimeout(() => playTone(659, 0.12, 'sine', 0.1), 60); }
+function playCombo(n) { const base = 440 + n * 80; playTone(base, 0.2, 'sine', 0.12); }
+function playExplosion() { playTone(110, 0.3, 'sawtooth', 0.08); playTone(55, 0.4, 'square', 0.05); }
+function playWarning() { playTone(300, 0.08, 'square', 0.06); }
+function playDanger() { playTone(200, 0.15, 'square', 0.08); }
+function playWin() {
+  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playTone(f, 0.3, 'sine', 0.12), i * 150));
+}
+function playLose() { [400, 350, 300, 250].forEach((f, i) => setTimeout(() => playTone(f, 0.25, 'triangle', 0.1), i * 200)); }
+function playClick() { playTone(600, 0.05, 'sine', 0.08); }
+function playShake() { playTone(100, 0.2, 'sawtooth', 0.06); }
+
+// BGM - pentatonic hotpot melody
+let bgmInterval = null;
+function startBGM() {
+  if (!game.musicOn || !audioCtx) return;
+  stopBGM();
+  const pentatonic = [262, 294, 330, 392, 440, 524, 588, 660]; // C D E G A
+  let noteIdx = 0;
+  bgmInterval = setInterval(() => {
+    if (!game.musicOn || game.state === State.OVER || game.state === State.WIN) return;
+    try {
+      const freq = pentatonic[noteIdx % pentatonic.length];
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq * 0.5; // one octave lower
+      gain.gain.setValueAtTime(0.04, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.8);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.8);
+      noteIdx++;
+      if (noteIdx % 8 === 0) {
+        // Add a soft chord on phrase end
+        [freq * 0.5, freq * 0.75, freq * 1.0].forEach((f) => {
+          const o2 = audioCtx.createOscillator();
+          const g2 = audioCtx.createGain();
+          o2.type = 'sine';
+          o2.frequency.value = f;
+          g2.gain.setValueAtTime(0.025, audioCtx.currentTime);
+          g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.6);
+          o2.connect(g2); g2.connect(audioCtx.destination);
+          o2.start(); o2.stop(audioCtx.currentTime + 0.6);
+        });
+      }
+    } catch(e) {}
+  }, 600);
+}
+function stopBGM() { if (bgmInterval) { clearInterval(bgmInterval); bgmInterval = null; } }
+
+// ============================================================
+// GRID CORE
+// ============================================================
+function initGrid(rows, cols) {
+  game.grid = Array.from({length: rows}, () => Array(cols).fill(null));
+  game.rows = rows;
+  game.cols = cols;
+}
+
+function getGrid(r, c) {
+  if (r < 0 || r >= game.rows || c < 0 || c >= game.cols) return 'wall';
+  return game.grid[r][c];
+}
+
+function getLevelConfig(level) {
+  let cols, rows;
+  if (level <= 5) { cols = 6; rows = 8; }
+  else if (level <= 10) { cols = 5; rows = 8; }
+  else { cols = 5; rows = 8; }
+
+  let foodCount;
+  if (level <= 3) foodCount = 3;
+  else if (level <= 6) foodCount = 4;
+  else if (level <= 9) foodCount = 5;
+  else foodCount = Math.min(7, 5 + Math.floor((level - 9) / 3));
+
+  const target = 300 + level * 100;
+  return { cols, rows, foodCount, target };
+}
+
+function setupLevel(level) {
+  const config = getLevelConfig(level);
+  game.level = level;
+  game.cols = config.cols;
+  game.rows = config.rows;
+  game.targetScore = config.target;
+  game.score = 0;
+  game.combo = 0;
+  game.maxCombo = 0;
+  game.lShapeCount = 0;
+  game.totalEliminated = 0;
+  game.shakeCount = 3;
+  game.tongsCount = 2;
+  game.undoCount = 2;
+  game.lastDrop = null;
+  game.warningLevel = 0;
+  game.warningTimer = 0;
+  game.deadlockTimer = 0;
+  game.deadlockCount = 0;
+  game.particles = [];
+  game.floatingTexts = [];
+  game.bubbleParticles = [];
+  game.matchCells = [];
+  game.currentFood = null;
+  game.nextFood = null;
+
+  game.availableFoods = [];
+  for (let i = 0; i < config.foodCount; i++) {
+    game.availableFoods.push(i);
+  }
+
+  initGrid(game.rows, game.cols);
+  spawnNextFood();
+  game.state = State.IDLE;
+}
+
+function spawnNextFood() {
+  const types = game.availableFoods;
+  const type = types[Math.floor(Math.random() * types.length)];
+  game.nextFood = { type };
+}
+
+function getPotBounds() {
+  const potW = game.cols * CELL_W + POT_PAD * 2;
+  const potH = game.rows * CELL_H + POT_PAD * 2 + 20; // +20 for rim
+  const potX = (W - potW) / 2;
+  const potY = 110;
+  return { potX, potY, potW, potH, gridX: potX + POT_PAD, gridY: potY + POT_PAD + 20 };
+}
+
+function getGridPixel(r, c) {
+  const { gridX, gridY } = getPotBounds();
+  return { x: gridX + c * CELL_W + CELL_W / 2, y: gridY + r * CELL_H + CELL_H / 2 };
+}
+
+function isCellFree(r, c) {
+  if (r >= game.rows || c < 0 || c >= game.cols) return false;
+  return r >= 0 && !game.grid[r][c];
+}
+
+// ============================================================
+// DROPPING MECHANICS
+// ============================================================
+function startDrop() {
+  if (!game.nextFood || game.state === State.OVER || game.state === State.WIN) return;
+  initAudio();
+  playClick();
+  game.currentFood = {
+    type: game.nextFood.type,
+    col: Math.floor(game.cols / 2),
+    row: -1,
+    pixelX: 0,
+    pixelY: 0,
+    phase: 0
+  };
+  const { gridX, gridY } = getPotBounds();
+  game.currentFood.pixelX = gridX + game.currentFood.col * CELL_W + CELL_W / 2;
+  game.currentFood.pixelY = gridY - CELL_H / 2;
+
+  spawnNextFood();
+  game.state = State.FALLING;
+}
+
+function updateFalling() {
+  if (!game.currentFood) return;
+  const f = game.currentFood;
+  const { gridX, gridY, gridW, gridH } = getPotBounds();
+  const fallSpeed = 4;
+
+  f.pixelY += fallSpeed;
+
+  // Calculate current row based on pixel position
+  const currentRow = Math.floor((f.pixelY - gridY + CELL_H / 2) / CELL_H);
+
+  // Check if we've reached or passed the grid
+  if (f.pixelY >= gridY) {
+    // Check blocking
+    const targetCol = f.col;
+    const targetRow = Math.min(currentRow, game.rows - 1);
+
+    // Find the actual landing row
+    let landRow = 0;
+    for (let r = 0; r < game.rows; r++) {
+      if (game.grid[r][targetCol] !== null) break;
+      landRow = r;
+    }
+
+    // Snap to landing position
+    if (f.pixelY >= gridY + landRow * CELL_H + CELL_H / 2) {
+      // Land!
+      game.grid[landRow][targetCol] = {
+        type: f.type,
+        id: Date.now() + Math.random()
+      };
+
+      // Save for undo
+      game.lastDrop = {
+        gridSnapshot: game.grid.map(row => row.map(cell => cell ? {...cell} : null)),
+        foodType: f.type,
+        foodCol: targetCol,
+        foodRow: landRow
+      };
+
+      game.currentFood = null;
+      playLand();
+      game.state = State.LANDED;
+      checkMatches();
+    }
+  }
+}
+
+// ============================================================
+// MATCH DETECTION
+// ============================================================
+function checkMatches() {
+  const rows = game.rows, cols = game.cols;
+  let matched = new Set();
+
+  // Horizontal check
+  for (let r = 0; r < rows; r++) {
+    let start = 0;
+    while (start < cols) {
+      if (!game.grid[r][start]) { start++; continue; }
+      let end = start + 1;
+      while (end < cols && game.grid[r][end] && game.grid[r][end].type === game.grid[r][start].type) end++;
+      if (end - start >= 3) {
+        for (let c = start; c < end; c++) matched.add(r + ',' + c);
+      }
+      start = end;
+    }
+  }
+
+  // Vertical check
+  for (let c = 0; c < cols; c++) {
+    let start = 0;
+    while (start < rows) {
+      if (!game.grid[start][c]) { start++; continue; }
+      let end = start + 1;
+      while (end < rows && game.grid[end][c] && game.grid[end][c].type === game.grid[start][c].type) end++;
+      if (end - start >= 3) {
+        for (let r = start; r < end; r++) matched.add(r + ',' + c);
+      }
+      start = end;
+    }
+  }
+
+  if (matched.size === 0) {
+    // No match - check game over, then spawn next
+    checkGameOver();
+    if (game.state !== State.OVER) {
+      game.state = State.IDLE;
+      checkDeadlock();
+    }
+    return;
+  }
+
+  // Check for L/T shape bonus
+  checkLTMatch(matched);
+
+  // Animate elimination
+  game.matchCells = [];
+  for (const key of matched) {
+    const [r, c] = key.split(',').map(Number);
+    game.matchCells.push({ row: r, col: c, type: game.grid[r][c]?.type });
+  }
+  game.matchAnimProgress = 0;
+  game.state = State.MATCHING;
+
+  // Score
+  const count = matched.size;
+  const combo = game.combo + 1;
+  game.combo = combo;
+  if (combo > game.maxCombo) game.maxCombo = combo;
+  const multiplier = Math.min(combo, 5);
+  const baseScore = count * 10 * multiplier;
+
+  // Add floating text for the match
+  let text = '+' + baseScore;
+  if (multiplier > 1) text += ' x' + multiplier;
+  if (game._isLT) text += ' LT!';
+
+  const { potX, potY, potW, potH } = getPotBounds();
+  game.floatingTexts.push({
+    x: potX + potW / 2 + (Math.random() - 0.5) * 100,
+    y: potY + potH / 2,
+    text: text,
+    life: 60,
+    maxLife: 60,
+    color: multiplier >= 4 ? COLORS.gold : multiplier >= 2 ? COLORS.accent : '#FFF',
+    size: multiplier >= 3 ? 28 : 22
+  });
+
+  if (game._isLT) {
+    game.score += baseScore * 2;
+    game.lShapeCount++;
+    // Explosion particles
+    spawnExplosionParticles();
+    playExplosion();
+  } else {
+    game.score += baseScore;
+    if (count >= 5) playExplosion();
+    else playMatch();
+  }
+
+  if (combo > 1) playCombo(combo);
+
+  game.totalEliminated += count;
+}
+
+function checkLTMatch(matched) {
+  // Check if matched cells form an L or T shape
+  // This means we have a horizontal run AND a vertical run sharing a corner cell
+  const cells = [...matched].map(k => k.split(',').map(Number));
+
+  // Find runs
+  const vertRuns = new Map(); // col -> [minRow, maxRow]
+  const horRuns = new Map();  // row -> [minCol, maxCol]
+
+  for (const [r, c] of cells) {
+    if (!vertRuns.has(c) || r < vertRuns.get(c)[0]) vertRuns.set(c, [r, r]);
+    if (!vertRuns.has(c) || r > vertRuns.get(c)[1]) {
+      const v = vertRuns.get(c);
+      if (v) v[1] = r;
+      else vertRuns.set(c, [r, r]);
+    }
+    if (!horRuns.has(r) || c < horRuns.get(r)[0]) horRuns.set(r, [c, c]);
+    if (!horRuns.has(r) || c > horRuns.get(r)[1]) {
+      const h = horRuns.get(r);
+      if (h) h[1] = c;
+      else horRuns.set(r, [c, c]);
+    }
+  }
+
+  game._isLT = false;
+  game._ltCenter = null;
+
+  // Find a cell that's part of a horizontal run >= 3 AND a vertical run >= 3
+  for (const [r, c] of cells) {
+    const h = horRuns.get(r);
+    const v = vertRuns.get(c);
+    if (h && v && (h[1] - h[0] >= 2) && (v[1] - v[0] >= 2)) {
+      game._isLT = true;
+      game._ltCenter = { row: r, col: c };
+      // Add 3x3 blast zone around center to matched
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < game.rows && nc >= 0 && nc < game.cols && game.grid[nr][nc]) {
+            matched.add(nr + ',' + nc);
+          }
+        }
+      }
+      return;
+    }
+  }
+}
+
+function spawnExplosionParticles() {
+  const { potX, potY, potW, potH } = getPotBounds();
+  const cx = potX + potW / 2, cy = potY + potH / 2;
+  for (let i = 0; i < 30; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 5;
+    game.particles.push({
+      x: cx + (Math.random() - 0.5) * potW * 0.6,
+      y: cy + (Math.random() - 0.5) * potH * 0.6,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 2,
+      life: 30 + Math.random() * 30,
+      maxLife: 60,
+      color: COLORS.particles[Math.floor(Math.random() * COLORS.particles.length)],
+      size: 3 + Math.random() * 5,
+    });
+  }
+}
+
+// ============================================================
+// MATCH ANIMATION & GRAVITY
+// ============================================================
+let matchFrameCount = 0;
+
+function updateMatching() {
+  matchFrameCount++;
+  game.matchAnimProgress = Math.min(matchFrameCount / 20, 1);
+
+  if (matchFrameCount >= 20) {
+    // Remove matched cells
+    for (const cell of game.matchCells) {
+      game.grid[cell.row][cell.col] = null;
+    }
+
+    // Spawn bubble particles at each match position
+    for (const cell of game.matchCells) {
+      const { x, y } = getGridPixel(cell.row, cell.col);
+      for (let i = 0; i < 3; i++) {
+        game.bubbleParticles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 3,
+          vy: -1 - Math.random() * 3,
+          life: 20 + Math.random() * 20,
+          maxLife: 40,
+          color: COLORS.bubbles[Math.floor(Math.random() * COLORS.bubbles.length)],
+          size: 4 + Math.random() * 8,
+        });
+      }
+    }
+
+    game.matchCells = [];
+    matchFrameCount = 0;
+    applyGravity();
+  }
+}
+
+function applyGravity() {
+  let moved = false;
+  for (let c = 0; c < game.cols; c++) {
+    for (let r = game.rows - 2; r >= 0; r--) {
+      if (game.grid[r][c] && !game.grid[r + 1][c]) {
+        // Move down
+        game.grid[r + 1][c] = game.grid[r][c];
+        game.grid[r][c] = null;
+        moved = true;
+      }
+    }
+  }
+
+  if (moved) {
+    // Check for chain reaction
+    game.state = State.SETTLING;
+    // After a short delay, check for new matches
+    setTimeout(() => {
+      if (game.state === State.OVER || game.state === State.WIN) return;
+      const prevScore = game.score;
+      checkMatches();
+      if (game.state === State.LANDED || game.state === State.SETTLING) {
+        // No new match
+        checkGameOver();
+        if (game.state !== State.OVER && game.score >= game.targetScore) {
+          game.state = State.WIN;
+          playWin();
+        } else if (game.state !== State.OVER) {
+          game.state = State.IDLE;
+          checkDeadlock();
+        }
+      }
+    }, 200);
+  } else {
+    // No movement, check game over and spawn next
+    checkGameOver();
+    if (game.state !== State.OVER && game.score >= game.targetScore) {
+      game.state = State.WIN;
+      playWin();
+    } else if (game.state !== State.OVER) {
+      game.state = State.IDLE;
+      checkDeadlock();
+    }
+  }
+}
+
+// ============================================================
+// GAME OVER CHECK
+// ============================================================
+function checkGameOver() {
+  const warning80 = 0.8;
+  const warning95 = 0.95;
+
+  // Find highest occupied row
+  let maxRow = -1;
+  for (let r = 0; r < game.rows; r++) {
+    for (let c = 0; c < game.cols; c++) {
+      if (game.grid[r][c]) { maxRow = Math.max(maxRow, r); break; }
+    }
+  }
+
+  const fillRatio = (maxRow + 1) / game.rows;
+
+  if (fillRatio >= 0.95) {
+    game.warningLevel = 2;
+    game.warningTimer = 10;
+    playDanger();
+  } else if (fillRatio >= 0.80) {
+    game.warningLevel = 1;
+    if (game.warningTimer <= 0) {
+      game.warningTimer = 20;
+      playWarning();
+    }
+  } else {
+    game.warningLevel = 0;
+  }
+
+  if (game.warningTimer > 0) game.warningTimer--;
+
+  // Game over: if center top cell is occupied (can't drop anything)
+  const centerCol = Math.floor(game.cols / 2);
+  if (game.grid[0][centerCol] !== null) {
+    gameOver();
+  }
+}
+
+function gameOver() {
+  game.state = State.OVER;
+  stopBGM();
+  playLose();
+
+  // Update stats
+  game.gameCount++;
+  localStorage.setItem('ygzbx_games', game.gameCount);
+
+  // Update leaderboard
+  if (game.score > 0) {
+    game.leaderboard.push({ score: game.score, level: game.level, date: new Date().toLocaleDateString() });
+    game.leaderboard.sort((a, b) => b.score - a.score);
+    if (game.leaderboard.length > 10) game.leaderboard.length = 10;
+    localStorage.setItem('ygzbx_lb', JSON.stringify(game.leaderboard));
+  }
+
+  if (game.score > parseInt(localStorage.getItem('ygzbx_high') || '0')) {
+    localStorage.setItem('ygzbx_high', game.score);
+    game.highScore = game.score;
+  }
+}
+
+// ============================================================
+// DEADLOCK DETECTION
+// ============================================================
+function checkDeadlock() {
+  game.deadlockTimer++;
+  if (game.deadlockTimer >= 60) { // ~1 second at 60fps
+    game.deadlockTimer = 0;
+    game.deadlockCount++;
+
+    if (game.deadlockCount >= 3) {
+      // Try to settle - shake all floating cells down
+      let settled = false;
+      for (let c = 0; c < game.cols; c++) {
+        for (let r = game.rows - 2; r >= 0; r--) {
+          if (game.grid[r][c] && !game.grid[r + 1][c]) {
+            game.grid[r + 1][c] = game.grid[r][c];
+            game.grid[r][c] = null;
+            settled = true;
+          }
+        }
+      }
+      if (settled) {
+        playShake();
+        // Flash screen
+        game.floatingTexts.push({
+          x: W / 2, y: H / 2 - 20,
+          text: '🔥 煮一煮，沉下去了',
+          life: 40, maxLife: 40,
+          color: COLORS.warning, size: 20
+        });
+        setTimeout(() => checkMatches(), 100);
+      }
+      game.deadlockCount = 0;
+    }
+  }
+}
+
+// ============================================================
+// MICRO-ADJUSTMENTS
+// ============================================================
+function useShake(direction) {
+  if (game.shakeCount <= 0 || game.state !== State.IDLE || !game.currentFood === null) return false;
+  initAudio();
+  playShake();
+
+  // Shift all ingredients one column left or right, but not out of bounds
+  const dCol = direction === 'left' ? -1 : 1;
+  let canShift = true;
+  for (let r = 0; r < game.rows; r++) {
+    for (let c = 0; c < game.cols; c++) {
+      if (game.grid[r][c]) {
+        const nc = c + dCol;
+        if (nc < 0 || nc >= game.cols) { canShift = false; break; }
+      }
+    }
+    if (!canShift) break;
+  }
+
+  if (!canShift) {
+    // Try opposite direction
+    const altDCol = direction === 'left' ? 1 : -1;
+    canShift = true;
+    for (let r = 0; r < game.rows; r++) {
+      for (let c = 0; c < game.cols; c++) {
+        if (game.grid[r][c]) {
+          const nc = c + altDCol;
+          if (nc < 0 || nc >= game.cols) { canShift = false; break; }
+        }
+      }
+      if (!canShift) break;
+    }
+    if (!canShift) {
+      game.floatingTexts.push({ x: W/2, y: H/3, text: '边缘抵住，摇不动', life: 30, maxLife: 30, color: COLORS.danger, size: 18 });
+      return false;
+    }
+    // Use opposite direction
+    doShake(altDCol);
+  } else {
+    doShake(dCol);
+  }
+
+  game.shakeCount--;
+  game.deadlockCount = 0;
+  return true;
+}
+
+function doShake(dCol) {
+  // Create new grid shifted by dCol
+  const newGrid = Array.from({length: game.rows}, () => Array(game.cols).fill(null));
+  for (let r = 0; r < game.rows; r++) {
+    for (let c = 0; c < game.cols; c++) {
+      const nc = c + dCol;
+      if (game.grid[r][c] && nc >= 0 && nc < game.cols) {
+        newGrid[r][nc] = game.grid[r][c];
+      }
+    }
+  }
+  game.grid = newGrid;
+
+  // Shake visual
+  game._shakeAnim = 10;
+  game.floatingTexts.push({
+    x: W/2, y: H/2 - 30,
+    text: '🫨 摇锅！',
+    life: 30, maxLife: 30,
+    color: COLORS.accent, size: 22
+  });
+
+  // After shake, check matches
+  setTimeout(() => { if (game.state !== State.OVER && game.state !== State.WIN) checkMatches(); }, 50);
+}
+
+function useTongs() {
+  if (game.tongsCount <= 0 || game.state !== State.IDLE) return false;
+  game.tongsActive = true;
+  game.floatingTexts.push({
+    x: W/2, y: H/2 - 30,
+    text: '🥢 点击锅中食材移除',
+    life: 40, maxLife: 40,
+    color: '#81D4FA', size: 18
+  });
+  return true;
+}
+
+function executeTongs(row, col) {
+  if (!game.grid[row][col]) return false;
+  game.grid[row][col] = null;
+  game.tongsCount--;
+  game.tongsActive = false;
+  playClick();
+
+  // Apply gravity after tongs
+  setTimeout(() => {
+    if (game.state !== State.OVER && game.state !== State.WIN) {
+      applyGravity();
+    }
+  }, 100);
+  return true;
+}
+
+function useUndo() {
+  if (game.undoCount <= 0 || game.state !== State.IDLE || !game.lastDrop) return false;
+  initAudio();
+  playClick();
+
+  // Restore grid to before the last drop
+  game.grid = game.lastDrop.gridSnapshot.map(row => row.map(cell => cell ? {...cell} : null));
+  game.undoCount--;
+  game.lastDrop = null;
+
+  game.floatingTexts.push({
+    x: W/2, y: H/2 - 30,
+    text: '↩️ 撤销',
+    life: 25, maxLife: 25,
+    color: '#B39DDB', size: 22
+  });
+
+  return true;
+}
+
+// ============================================================
+// TUTORIAL
+// ============================================================
+function startTutorial() {
+  game.tutoStep = 0;
+  game.state = State.TUTORIAL;
+  setupLevel(1);
+}
+function advanceTutorial() {
+  game.tutoStep++;
+  if (game.tutoStep >= 5) {
+    game.tutoDone = true;
+    localStorage.setItem('ygzbx_tuto', '1');
+    game.state = State.IDLE;
+    setupLevel(1);
+    startBGM();
+  }
+}
+function skipTutorial() {
+  game.tutoDone = true;
+  localStorage.setItem('ygzbx_tuto', '1');
+  game.state = State.IDLE;
+  setupLevel(1);
+  startBGM();
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function drawPot() {
+  const { potX, potY, potW, potH, gridX, gridY } = getPotBounds();
+
+  // Pot shadow
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 20;
+  ctx.shadowOffsetY = 5;
+
+  // Pot outer body
+  const r = 16;
+  ctx.beginPath();
+  ctx.moveTo(potX + r, potY + 5);
+  ctx.lineTo(potX + potW - r, potY + 5);
+  ctx.quadraticCurveTo(potX + potW, potY + 5, potX + potW, potY + r);
+  ctx.lineTo(potX + potW, potY + potH - r);
+  ctx.quadraticCurveTo(potX + potW, potY + potH, potX + potW - r, potY + potH);
+  ctx.lineTo(potX + r, potY + potH);
+  ctx.quadraticCurveTo(potX, potY + potH, potX, potY + potH - r);
+  ctx.lineTo(potX, potY + r);
+  ctx.quadraticCurveTo(potX, potY + 5, potX + r, potY + 5);
+  ctx.closePath();
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = COLORS.potBody;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+
+  // Pot inner (darker)
+  const iR = 8, iP = 6;
+  const innerX = potX + iP, innerY = potY + 10, innerW = potW - iP * 2, innerH = potH - 14;
+  ctx.beginPath();
+  ctx.moveTo(innerX + iR, innerY);
+  ctx.lineTo(innerX + innerW - iR, innerY);
+  ctx.quadraticCurveTo(innerX + innerW, innerY, innerX + innerW, innerY + iR);
+  ctx.lineTo(innerX + innerW, innerY + innerH - iR);
+  ctx.quadraticCurveTo(innerX + innerW, innerY + innerH, innerX + innerW - iR, innerY + innerH);
+  ctx.lineTo(innerX + iR, innerY + innerH);
+  ctx.quadraticCurveTo(innerX, innerY + innerH, innerX, innerY + innerH - iR);
+  ctx.lineTo(innerX, innerY + iR);
+  ctx.quadraticCurveTo(innerX, innerY, innerX + iR, innerY);
+  ctx.closePath();
+  ctx.fillStyle = COLORS.potInner;
+  ctx.fill();
+
+  // Pot rim highlight
+  ctx.fillStyle = COLORS.potRim;
+  ctx.fillRect(potX + 10, potY, potW - 20, 6);
+  ctx.fillStyle = 'rgba(255,200,100,0.15)';
+  ctx.fillRect(potX + 10, potY, potW - 20, 3);
+
+  // Grid lines
+  for (let r = 0; r < game.rows; r++) {
+    for (let c = 0; c < game.cols; c++) {
+      const x = gridX + c * CELL_W;
+      const y = gridY + r * CELL_H;
+      ctx.strokeStyle = COLORS.gridLine;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, CELL_W, CELL_H);
+    }
+  }
+
+  // Warning overlay
+  if (game.warningLevel > 0) {
+    const alpha = Math.sin(Date.now() / 100 * Math.PI) * 0.3 + 0.3;
+    ctx.fillStyle = game.warningLevel === 2
+      ? `rgba(255,0,0,${alpha + 0.2})`
+      : `rgba(255,200,0,${alpha})`;
+    ctx.fillRect(innerX, innerY, innerW, innerH);
+  }
+}
+
+function drawIngredient(r, c, type, alpha = 1) {
+  const { x, y } = getGridPixel(r, c);
+  const ing = INGREDIENTS[type];
+  if (!ing) return;
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = 4;
+
+  switch (ing.shape) {
+    case 'rect': // 蟹柳 - long red rectangle
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.fillRect(x - ing.w / 2 + 2, y - ing.h / 2 + 1, ing.w - 4, 3);
+      break;
+    case 'circle': // 牛肉丸 / 鱼丸
+      ctx.beginPath();
+      ctx.arc(x, y, ing.r, 0, Math.PI * 2);
+      ctx.fillStyle = ing.color;
+      ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(x - ing.r * 0.25, y - ing.r * 0.25, ing.r * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'thin': // 金针菇
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(x, y - ing.h / 2 + 3, 5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'square': // 豆腐泡 / 年糕
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
+      ctx.strokeStyle = ing.light;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
+      break;
+    case 'oval': // 虾滑
+      ctx.fillStyle = ing.color;
+      ctx.beginPath();
+      ctx.ellipse(x, y, ing.w / 2, ing.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.ellipse(x - 3, y - 2, ing.w / 4, ing.h / 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
+function drawIngredients() {
+  for (let r = 0; r < game.rows; r++) {
+    for (let c = 0; c < game.cols; c++) {
+      const cell = game.grid[r][c];
+      if (cell) {
+        // Check if being eliminated
+        const isMatching = game.matchCells.some(m => m.row === r && m.col === c);
+        if (isMatching && game.state === State.MATCHING) {
+          const progress = game.matchAnimProgress;
+          const scale = 1 + progress * 0.5;
+          const alpha = 1 - progress;
+          ctx.save();
+          const pos = getGridPixel(r, c);
+          ctx.translate(pos.x, pos.y);
+          ctx.scale(scale, scale);
+          ctx.globalAlpha = alpha;
+          ctx.translate(-pos.x, -pos.y);
+          drawIngredient(r, c, cell.type, alpha);
+          ctx.restore();
+        } else {
+          drawIngredient(r, c, cell.type);
+        }
+      }
+    }
+  }
+}
+
+function drawFallingFood() {
+  if (!game.currentFood) return;
+  const f = game.currentFood;
+  const ing = INGREDIENTS[f.type];
+  if (!ing) return;
+
+  ctx.shadowColor = 'rgba(255,200,0,0.3)';
+  ctx.shadowBlur = 10;
+
+  // Draw centered at pixel position
+  const size = 26;
+  const y = f.pixelY;
+  const x = f.pixelX;
+
+  // Glow
+  ctx.beginPath();
+  ctx.arc(x, y, size, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,200,100,0.15)';
+  ctx.fill();
+
+  // Draw ingredient
+  ctx.save();
+  ctx.translate(x, y);
+  // Draw at (0,0) local coordinates
+  switch (ing.shape) {
+    case 'rect':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.fillRect(-ing.w/2 + 2, -ing.h/2 + 1, ing.w - 4, 3);
+      break;
+    case 'circle':
+      ctx.beginPath();
+      ctx.arc(0, 0, ing.r, 0, Math.PI * 2);
+      ctx.fillStyle = ing.color; ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(-ing.r*0.25, -ing.r*0.25, ing.r*0.4, 0, Math.PI*2);
+      ctx.fill();
+      break;
+    case 'thin':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(0, -ing.h/2 + 3, 5, 0, Math.PI*2); ctx.fill();
+      break;
+    case 'square':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.strokeStyle = ing.light; ctx.lineWidth = 2;
+      ctx.strokeRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      break;
+    case 'oval':
+      ctx.fillStyle = ing.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ing.w/2, ing.h/2, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.ellipse(-3, -2, ing.w/4, ing.h/4, 0, 0, Math.PI*2);
+      ctx.fill();
+      break;
+  }
+  ctx.restore();
+  ctx.shadowBlur = 0;
+}
+
+function drawNextFood() {
+  if (!game.nextFood || game.state === State.OVER || game.state === State.WIN) return;
+  const { potX, potW, gridX } = getPotBounds();
+  const centerCol = Math.floor(game.cols / 2);
+
+  // Arrow pointing down
+  const arrowY = 75;
+  ctx.fillStyle = 'rgba(255,200,100,0.6)';
+  ctx.beginPath();
+  ctx.moveTo(gridX + centerCol * CELL_W + CELL_W / 2, arrowY + 12);
+  ctx.lineTo(gridX + centerCol * CELL_W + CELL_W / 2 - 8, arrowY);
+  ctx.lineTo(gridX + centerCol * CELL_W + CELL_W / 2 + 8, arrowY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Food preview above pot
+  const ing = INGREDIENTS[game.nextFood.type];
+  if (!ing) return;
+  const px = gridX + centerCol * CELL_W + CELL_W / 2;
+  const py = 50;
+  const pulse = Math.sin(Date.now() / 300) * 3;
+
+  ctx.shadowColor = 'rgba(255,200,100,0.4)';
+  ctx.shadowBlur = 15 + pulse;
+
+  // Draw ingredient centered at px, py
+  ctx.save();
+  ctx.translate(px, py + pulse);
+  switch (ing.shape) {
+    case 'rect':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.fillRect(-ing.w/2 + 2, -ing.h/2 + 1, ing.w-4, 3);
+      break;
+    case 'circle':
+      ctx.beginPath();
+      ctx.arc(0, 0, ing.r, 0, Math.PI*2);
+      ctx.fillStyle = ing.color; ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(-ing.r*0.25, -ing.r*0.25, ing.r*0.4, 0, Math.PI*2); ctx.fill();
+      break;
+    case 'thin':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.arc(0, -ing.h/2+3, 5, 0, Math.PI*2); ctx.fill();
+      break;
+    case 'square':
+      ctx.fillStyle = ing.color;
+      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      ctx.strokeStyle = ing.light; ctx.lineWidth = 2;
+      ctx.strokeRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
+      break;
+    case 'oval':
+      ctx.fillStyle = ing.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ing.w/2, ing.h/2, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = ing.light;
+      ctx.beginPath();
+      ctx.ellipse(-3, -2, ing.w/4, ing.h/4, 0, 0, Math.PI*2);
+      ctx.fill();
+      break;
+  }
+  ctx.restore();
+  ctx.shadowBlur = 0;
+
+  // "点击下落" hint
+  ctx.fillStyle = 'rgba(255,220,180,0.5)';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('点击落下', px, 32);
+}
+
+function drawParticles() {
+  // Update and draw particles
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life--;
+    if (p.life <= 0) { game.particles.splice(i, 1); continue; }
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Bubble particles
+  for (let i = game.bubbleParticles.length - 1; i >= 0; i--) {
+    const p = game.bubbleParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy -= 0.02;
+    p.life--;
+    if (p.life <= 0) { game.bubbleParticles.splice(i, 1); continue; }
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha * 0.6;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * (0.5 + 0.5 * alpha), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Floating texts
+  for (let i = game.floatingTexts.length - 1; i >= 0; i--) {
+    const t = game.floatingTexts[i];
+    t.y -= 0.8;
+    t.life--;
+    if (t.life <= 0) { game.floatingTexts.splice(i, 1); continue; }
+    const alpha = Math.min(t.life / t.maxLife * 2, 1);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = t.color;
+    ctx.font = `bold ${t.size}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(t.text, t.x, t.y);
+    ctx.shadowBlur = 0;
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawUI() {
+  const { potX, potY, potW } = getPotBounds();
+
+  // --- TOP BAR ---
+  ctx.textAlign = 'left';
+
+  // Level
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '14px sans-serif';
+  ctx.fillText('第 ' + game.level + ' 关', 15, 25);
+
+  // Score
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 22px sans-serif';
+  const scoreText = game.score + ' / ' + game.targetScore;
+  ctx.textAlign = 'center';
+  ctx.fillText('🔥 ' + scoreText, W / 2, 28);
+
+  // Progress bar under score
+  const barW = 200, barH = 6, barX = (W - barW) / 2, barY = 34;
+  ctx.fillStyle = 'rgba(255,255,255,0.1)';
+  ctx.fillRect(barX, barY, barW, barH);
+  const progress = Math.min(game.score / game.targetScore, 1);
+  const grad = ctx.createLinearGradient(barX, 0, barX + barW * progress, 0);
+  grad.addColorStop(0, COLORS.accent);
+  grad.addColorStop(1, COLORS.gold);
+  ctx.fillStyle = grad;
+  ctx.fillRect(barX, barY, barW * progress, barH);
+
+  // Combo
+  if (game.combo > 0) {
+    ctx.fillStyle = game.combo >= 3 ? COLORS.gold : COLORS.accent;
+    ctx.font = game.combo >= 4 ? 'bold 18px sans-serif' : '14px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('Combo x' + game.combo, W - 15, 25);
+  }
+
+  // High score
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('最高: ' + game.highScore, W - 15, 42);
+
+  // --- TOOLS BAR ---
+  const toolY = H - 70;
+  const toolSpacing = 80;
+  const toolStartX = (W - (3 * toolSpacing)) / 2;
+
+  const tools = [
+    { label: '🫨 ' + game.shakeCount, active: game.shakeCount > 0 && game.state === State.IDLE, onClick: () => useShake('left') },
+    { label: '🥢 ' + game.tongsCount, active: game.tongsCount > 0 && game.state === State.IDLE, onClick: useTongs },
+    { label: '↩️ ' + game.undoCount, active: game.undoCount > 0 && game.state === State.IDLE && game.lastDrop !== null, onClick: useUndo },
+  ];
+
+  for (let i = 0; i < tools.length; i++) {
+    const t = tools[i];
+    const tx = toolStartX + i * toolSpacing;
+    ctx.globalAlpha = t.active ? 1 : 0.4;
+    ctx.fillStyle = t.active ? 'rgba(255,200,150,0.15)' : 'rgba(255,200,150,0.05)';
+    ctx.beginPath();
+    ctx.roundRect(tx - 30, toolY - 15, 60, 36, 8);
+    ctx.fill();
+    ctx.fillStyle = t.active ? COLORS.text : COLORS.textDim;
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(t.label, tx, toolY + 6);
+
+    // Store button info for click detection
+    t._bounds = { x: tx - 30, y: toolY - 15, w: 60, h: 36 };
+    ctx.globalAlpha = 1;
+  }
+
+  // Store tools for click detection
+  game._tools = tools;
+
+  // --- PAUSE BUTTON ---
+  ctx.fillStyle = 'rgba(255,255,255,0.1)';
+  ctx.beginPath();
+  ctx.arc(25, H - 35, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('⏸', 25, H - 31);
+
+  // --- TUTORIAL OVERLAY ---
+  if (game.state === State.TUTORIAL) {
+    drawTutorialOverlay();
+  }
+
+  // --- GAME OVER OVERLAY ---
+  if (game.state === State.OVER) {
+    drawGameOverScreen();
+  }
+
+  // --- WIN OVERLAY ---
+  if (game.state === State.WIN) {
+    drawWinScreen();
+  }
+}
+
+function drawTutorialOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  const tutos = [
+    { title: '点击食材', desc: '点击上方出现的食材，它会掉进锅里' },
+    { title: '垂直下落', desc: '食材从锅中央自由落体，遇到阻挡停止' },
+    { title: '三个消除', desc: '横竖方向≥3个相同食材会自动消除' },
+    { title: '连消Combo', desc: '消除后上层下落，可能触发连消！' },
+    { title: '微调工具', desc: '用摇锅/夹子/撤销来调整布局' },
+  ];
+  const t = tutos[Math.min(game.tutoStep, tutos.length - 1)];
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText(t.title, W/2, H/2 - 40);
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '16px sans-serif';
+  ctx.fillText(t.desc, W/2, H/2 + 5);
+
+  // Skip + Next buttons
+  if (game.tutoStep < tutos.length - 1) {
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('点击继续', W/2, H/2 + 60);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('（点击跳过）', W/2, H/2 + 85);
+  } else {
+    ctx.fillStyle = 'rgba(255,200,100,0.9)';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('点击开始游戏！', W/2, H/2 + 60);
+  }
+}
+
+function drawGameOverScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.danger;
+  ctx.font = 'bold 36px sans-serif';
+  ctx.fillText('溢出来了！', W/2, H/2 - 80);
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '20px sans-serif';
+  ctx.fillText('得分: ' + game.score, W/2, H/2 - 30);
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '14px sans-serif';
+  ctx.fillText('第 ' + game.level + ' 关 | 最高连消: x' + game.maxCombo + ' | L/T形: ' + game.lShapeCount + '次', W/2, H/2 + 5);
+  ctx.fillText('总局数: ' + game.gameCount + ' | 最高分: ' + game.highScore, W/2, H/2 + 28);
+
+  // Buttons
+  const btnY = H/2 + 70;
+  ctx.fillStyle = COLORS.accent;
+  ctx.beginPath();
+  ctx.roundRect(W/2 - 80, btnY, 160, 42, 10);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText('再来一局', W/2, btnY + 28);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.beginPath();
+  ctx.roundRect(W/2 - 60, btnY + 55, 120, 32, 8);
+  ctx.fill();
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '13px sans-serif';
+  ctx.fillText('返回主页', W/2, btnY + 76);
+}
+
+function drawWinScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 34px sans-serif';
+  ctx.fillText('🍲 过关！', W/2, H/2 - 80);
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '18px sans-serif';
+  ctx.fillText('得分: ' + game.score + ' / ' + game.targetScore, W/2, H/2 - 35);
+  ctx.fillStyle = COLORS.textDim;
+  ctx.font = '14px sans-serif';
+  ctx.fillText('最高连消: x' + game.maxCombo + ' | L/T形: ' + game.lShapeCount + '次', W/2, H/2 - 8);
+
+  const btnY = H/2 + 30;
+  ctx.fillStyle = COLORS.accent;
+  ctx.beginPath();
+  ctx.roundRect(W/2 - 80, btnY, 160, 42, 10);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText('下一关 →', W/2, btnY + 28);
+}
+
+// ============================================================
+// MAIN GAME LOOP
+// ============================================================
+function gameLoop() {
+  update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+function update() {
+  if (game.state === State.PAUSED) return;
+
+  // Update shake animation
+  if (game._shakeAnim > 0) game._shakeAnim--;
+
+  switch (game.state) {
+    case State.IDLE:
+      // Deadlock detection only runs when IDLE
+      if (game.currentFood === null) checkDeadlock();
+      break;
+    case State.FALLING:
+      updateFalling();
+      break;
+    case State.MATCHING:
+      updateMatching();
+      break;
+    case State.LANDED:
+    case State.SETTLING:
+      // handled by setTimeout callbacks
+      break;
+  }
+
+  // Update particles
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    game.particles[i].life--;
+    if (game.particles[i].life <= 0) game.particles.splice(i, 1);
+  }
+  for (let i = game.bubbleParticles.length - 1; i >= 0; i--) {
+    game.bubbleParticles[i].life--;
+    if (game.bubbleParticles[i].life <= 0) game.bubbleParticles.splice(i, 1);
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background pattern
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle steam effect
+  for (let i = 0; i < 5; i++) {
+    const sx = 80 + Math.sin(Date.now() / 2000 + i * 1.5) * 60 + i * 80;
+    const sy = 50 + Math.sin(Date.now() / 1500 + i * 2) * 10 - i * 5;
+    ctx.fillStyle = `rgba(255,220,200,${0.03 + Math.sin(Date.now() / 1000 + i) * 0.02})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 15 + i * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Shake effect
+  ctx.save();
+  if (game._shakeAnim > 0) {
+    const intensity = game._shakeAnim / 10 * 3;
+    ctx.translate(
+      (Math.random() - 0.5) * intensity,
+      (Math.random() - 0.5) * intensity
+    );
+  }
+
+  // Draw game
+  drawPot();
+  drawIngredients();
+  drawFallingFood();
+  drawNextFood();
+  drawParticles();
+  drawUI();
+
+  ctx.restore();
+}
+
+// ============================================================
+// INPUT HANDLING
+// ============================================================
+function handleClick(clientX, clientY) {
+  initAudio();
+
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) / rect.width * W;
+  const y = (clientY - rect.top) / rect.height * H;
+
+  // Tutorial clicks
+  if (game.state === State.TUTORIAL) {
+    advanceTutorial();
+    return;
+  }
+
+  // Game over / Win screens
+  if (game.state === State.OVER) {
+    // "再来一局" button
+    if (y >= H/2 + 70 - 20 && y <= H/2 + 70 + 42 && x >= W/2 - 80 && x <= W/2 + 80) {
+      setupLevel(game.level);
+      startBGM();
+      return;
+    }
+    // "返回主页" button
+    if (y >= H/2 + 125 - 16 && y <= H/2 + 125 + 32 && x >= W/2 - 60 && x <= W/2 + 60) {
+      game.state = State.IDLE;
+      setupLevel(1);
+      startBGM();
+      return;
+    }
+    return;
+  }
+
+  if (game.state === State.WIN) {
+    if (y >= H/2 + 30 - 20 && y <= H/2 + 30 + 42 && x >= W/2 - 80 && x <= W/2 + 80) {
+      setupLevel(game.level + 1);
+      startBGM();
+      return;
+    }
+    return;
+  }
+
+  if (game.state === State.PAUSED) {
+    game.state = State.IDLE;
+    return;
+  }
+
+  // Tongs mode - click on grid
+  if (game.tongsActive) {
+    const { gridX, gridY } = getPotBounds();
+    const col = Math.floor((x - gridX) / CELL_W);
+    const row = Math.floor((y - gridY) / CELL_H);
+    if (row >= 0 && row < game.rows && col >= 0 && col < game.cols && game.grid[row][col]) {
+      executeTongs(row, col);
+    } else {
+      game.tongsActive = false;
+    }
+    return;
+  }
+
+  // Pause button
+  if (x >= 10 && x <= 40 && y >= H - 50 && y <= H - 20) {
+    game.state = State.PAUSED;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = COLORS.text;
+    ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('已暂停', W/2, H/2 - 10);
+    ctx.fillStyle = COLORS.textDim;
+    ctx.font = '14px sans-serif';
+    ctx.fillText('点击继续', W/2, H/2 + 20);
+    return;
+  }
+
+  // Tool buttons
+  if (game._tools) {
+    for (const t of game._tools) {
+      const b = t._bounds;
+      if (!b) continue;
+      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h && t.active) {
+        t.onClick();
+        return;
+      }
+    }
+  }
+
+  // Drop food - click anywhere on the pot area or food
+  if (game.state === State.IDLE && game.nextFood && !game.currentFood) {
+    startDrop();
+    return;
+  }
+
+  // If clicking while food is falling, do nothing
+}
+
+// Input events
+canvas.addEventListener('click', (e) => {
+  handleClick(e.clientX, e.clientY);
+});
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  handleClick(touch.clientX, touch.clientY);
+}, { passive: false });
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+function initGame() {
+  // RoundRect polyfill for older browsers
+  if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+      if (r > w/2) r = w/2;
+      if (r > h/2) r = h/2;
+      this.moveTo(x + r, y);
+      this.lineTo(x + w - r, y);
+      this.quadraticCurveTo(x + w, y, x + w, y + r);
+      this.lineTo(x + w, y + h - r);
+      this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      this.lineTo(x + r, y + h);
+      this.quadraticCurveTo(x, y + h, x, y + h - r);
+      this.lineTo(x, y + r);
+      this.quadraticCurveTo(x, y, x + r, y);
+      this.closePath();
+      return this;
+    };
+  }
+
+  if (!game.tutoDone) {
+    startTutorial();
+  } else {
+    setupLevel(1);
+    startBGM();
+  }
+
+  gameLoop();
+}
+
+// Start when ready
+initGame();
+</script>
+</body>
+</html>
