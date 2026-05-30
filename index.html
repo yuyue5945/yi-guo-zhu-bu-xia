@@ -337,7 +337,8 @@ function startDrop() {
     row: -1,
     pixelX: 0,
     pixelY: 0,
-    phase: 0
+    phase: 0,
+    lastCheckRow: -1
   };
   const { gridX, gridY } = getPotBounds();
   game.currentFood.pixelX = gridX + game.currentFood.col * CELL_W + CELL_W / 2;
@@ -350,49 +351,86 @@ function startDrop() {
 function updateFalling() {
   if (!game.currentFood) return;
   const f = game.currentFood;
-  const { gridX, gridY, gridW, gridH } = getPotBounds();
-  const fallSpeed = 4;
+  const { gridX, gridY } = getPotBounds();
+  const fallSpeed = 8;
 
   f.pixelY += fallSpeed;
 
-  // Calculate current row based on pixel position
-  const currentRow = Math.floor((f.pixelY - gridY + CELL_H / 2) / CELL_H);
+  // Not yet entered the grid
+  if (f.pixelY < gridY) return;
 
-  // Check if we've reached or passed the grid
-  if (f.pixelY >= gridY) {
-    // Check blocking
-    const targetCol = f.col;
-    const targetRow = Math.min(currentRow, game.rows - 1);
+  const col = f.col;
+  // Current row based on pixel position
+  const currentRow = Math.min(Math.floor((f.pixelY - gridY) / CELL_H), game.rows - 1);
 
-    // Find the actual landing row
-    let landRow = 0;
-    for (let r = 0; r < game.rows; r++) {
-      if (game.grid[r][targetCol] !== null) break;
-      landRow = r;
+  // Each time we cross into a new row, check blocking
+  if (currentRow !== f.lastCheckRow) {
+    f.lastCheckRow = currentRow;
+
+    // Check if the current cell is already occupied (pot is full at this row)
+    if (game.grid[currentRow][col] !== null) {
+      if (currentRow === 0) {
+        // Top row already full - game over
+        gameOver();
+        game.currentFood = null;
+        return;
+      }
+      // Land one row above the occupied cell
+      landAt(currentRow - 1, col);
+      return;
     }
 
-    // Snap to landing position
-    if (f.pixelY >= gridY + landRow * CELL_H + CELL_H / 2) {
-      // Land!
-      game.grid[landRow][targetCol] = {
-        type: f.type,
-        id: Date.now() + Math.random()
-      };
+    // Check if cell below is occupied (blocking)
+    const checkRow = currentRow + 1;
+    if (checkRow < game.rows && game.grid[checkRow][col] !== null) {
+      // Blocked! Stop at current row
+      landAt(currentRow, col);
+      return;
+    }
 
-      // Save for undo
-      game.lastDrop = {
-        gridSnapshot: game.grid.map(row => row.map(cell => cell ? {...cell} : null)),
-        foodType: f.type,
-        foodCol: targetCol,
-        foodRow: landRow
-      };
-
-      game.currentFood = null;
-      playLand();
-      game.state = State.LANDED;
-      checkMatches();
+    // If this is the last row, land here
+    if (currentRow === game.rows - 1) {
+      landAt(currentRow, col);
+      return;
     }
   }
+
+  // Safety: if we've passed the bottom of the grid, snap to last row
+  if (f.pixelY >= gridY + (game.rows - 1) * CELL_H + CELL_H) {
+    const r = game.rows - 1;
+    for (let check = r; check >= 0; check--) {
+      if (!game.grid[check][col]) {
+        landAt(check, col);
+        return;
+      }
+    }
+    // All rows occupied - game over
+  }
+}
+
+function landAt(row, col) {
+  const f = game.currentFood;
+  if (!f) return;
+  // Check if cell is already occupied (shouldn't happen, but safety)
+  if (game.grid[row] && game.grid[row][col] !== null) {
+    gameOver();
+    game.currentFood = null;
+    return;
+  }
+  game.grid[row][col] = {
+    type: f.type,
+    id: Date.now() + Math.random()
+  };
+  game.lastDrop = {
+    gridSnapshot: game.grid.map(r => r.map(c => c ? {...c} : null)),
+    foodType: f.type,
+    foodCol: col,
+    foodRow: row
+  };
+  game.currentFood = null;
+  playLand();
+  game.state = State.LANDED;
+  checkMatches();
 }
 
 // ============================================================
