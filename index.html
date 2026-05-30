@@ -1018,27 +1018,36 @@ function drawIngredientAt(ctx, x, y, type, size = 24, alpha = 1) {
   ctx.globalAlpha = alpha;
 
   // Colored circle background
-  ctx.shadowColor = 'rgba(0,0,0,0.3)';
-  ctx.shadowBlur = 6;
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 8;
   ctx.beginPath();
-  ctx.arc(x, y, size * 0.55, 0, Math.PI * 2);
+  ctx.arc(x, y, size * 0.58, 0, Math.PI * 2);
   ctx.fillStyle = ing.color;
   ctx.fill();
 
   // Inner highlight
   ctx.shadowBlur = 0;
   ctx.beginPath();
-  ctx.arc(x - size * 0.12, y - size * 0.12, size * 0.2, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.arc(x - size * 0.12, y - size * 0.12, size * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
   ctx.fill();
 
-  // Emoji
-  ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+  // Emoji (with text fallback for browsers without emoji support)
+  ctx.font = `${size}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.shadowColor = 'rgba(0,0,0,0.4)';
-  ctx.shadowBlur = 3;
+  ctx.shadowBlur = 4;
   ctx.fillText(ing.emoji, x, y + 1);
+  
+  // Text label as backup (renders inside circle if emoji fails)
+  ctx.shadowBlur = 0;
+  ctx.font = `bold ${size * 0.4}px "PingFang SC", "Microsoft YaHei", sans-serif`;
+  ctx.fillStyle = '#FFF';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 3;
+  ctx.fillText(ing.name.charAt(0), x, y + 1);
+  
   ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
 }
@@ -1095,35 +1104,40 @@ function drawFallingFood() {
 }
 
 function drawNextFood() {
-  if (!game.nextFood || game.state === State.OVER || game.state === State.WIN) return;
+  if (!game.nextFood || game.state === State.OVER || game.state === State.WIN || game.state === State.TUTORIAL) return;
   const { potX, potW, gridX } = getPotBounds();
   const centerCol = Math.floor(game.cols / 2);
-
-  // Arrow pointing down
-  const arrowY = 75;
-  ctx.fillStyle = 'rgba(255,200,100,0.6)';
-  ctx.beginPath();
-  ctx.moveTo(gridX + centerCol * CELL_W + CELL_W / 2, arrowY + 12);
-  ctx.lineTo(gridX + centerCol * CELL_W + CELL_W / 2 - 8, arrowY);
-  ctx.lineTo(gridX + centerCol * CELL_W + CELL_W / 2 + 8, arrowY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Food preview above pot
-  const px = gridX + centerCol * CELL_W + CELL_W / 2;
-  const py = 50;
+  const cx = gridX + centerCol * CELL_W + CELL_W / 2;
   const pulse = Math.sin(Date.now() / 300) * 3;
 
+  // Big pulsing ring to attract attention
+  const ringSize = 36 + pulse;
   ctx.shadowColor = 'rgba(255,200,100,0.4)';
-  ctx.shadowBlur = 15 + pulse;
-  drawIngredientAt(ctx, px, py + pulse, game.nextFood.type, 32);
+  ctx.shadowBlur = 20;
+  ctx.strokeStyle = 'rgba(255,200,100,0.25)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(cx, 60, ringSize, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // "点击下落" hint
-  ctx.fillStyle = 'rgba(255,220,180,0.5)';
-  ctx.font = '12px sans-serif';
+  // Food ingredient with color circle + name label
+  const ing = INGREDIENTS[game.nextFood.type];
+  drawIngredientAt(ctx, cx, 60 + pulse, game.nextFood.type, 34);
+  
+  // Name label below
+  ctx.fillStyle = 'rgba(255,220,180,0.8)';
+  ctx.font = 'bold 14px "PingFang SC", "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('点击落下', px, 32);
+  ctx.fillText(ing.name, cx, 88);
+
+  // BIG tap prompt
+  ctx.shadowColor = 'rgba(255,200,100,0.3)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = 'rgba(255,220,180,0.7)';
+  ctx.font = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.fillText('👆 点击掉下', cx, 28);
+  ctx.shadowBlur = 0;
 }
 
 function drawParticles() {
