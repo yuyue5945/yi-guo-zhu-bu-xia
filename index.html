@@ -33,9 +33,10 @@ html, body {
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-// Responsive sizing
+// Responsive sizing with Retina support
 const DESIGN_W = 480, DESIGN_H = 800;
 let scale, W, H;
+const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x for performance
 
 function resizeCanvas() {
   const maxW = window.innerWidth, maxH = window.innerHeight;
@@ -44,11 +45,17 @@ function resizeCanvas() {
   if (w / h > ratio) { w = h * ratio; }
   else { h = w / ratio; }
   w = Math.floor(w); h = Math.floor(h);
-  if (w !== canvas.width || h !== canvas.height) {
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    canvas.width = DESIGN_W; canvas.height = DESIGN_H;
-  }
+  
+  // Set canvas buffer size to retina resolution
+  canvas.width = DESIGN_W * dpr;
+  canvas.height = DESIGN_H * dpr;
+  // Keep CSS display size at logical resolution
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  
+  // Scale context for retina rendering
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  
   scale = DESIGN_W / w;
   W = DESIGN_W; H = DESIGN_H;
 }
@@ -74,13 +81,13 @@ const COLORS = {
 
 // --- Ingredient Definitions ---
 const INGREDIENTS = [
-  { id: 0, name: '蟹柳', color: '#E53935', light: '#FF8A80', shape: 'rect',   w: 32, h: 10 },
-  { id: 1, name: '牛肉丸', color: '#8D6E63', light: '#BE9C91', shape: 'circle', r: 16 },
-  { id: 2, name: '金针菇', color: '#FFF9C4', light: '#FFFDE7', shape: 'thin',   w: 6,  h: 28 },
-  { id: 3, name: '豆腐泡', color: '#FFE082', light: '#FFF3C4', shape: 'square', w: 24, h: 24 },
-  { id: 4, name: '虾滑',   color: '#F48FB1', light: '#F8BBD0', shape: 'oval',  w: 30, h: 18 },
-  { id: 5, name: '鱼丸',   color: '#81D4FA', light: '#B3E5FC', shape: 'circle', r: 14 },
-  { id: 6, name: '年糕',   color: '#C8E6C9', light: '#E8F5E9', shape: 'square', w: 20, h: 28 },
+  { id: 0, name: '蟹柳', emoji: '🦀', color: '#E53935', bg: 'rgba(229,57,53,0.25)' },
+  { id: 1, name: '牛肉丸', emoji: '🥩', color: '#8D6E63', bg: 'rgba(141,110,99,0.25)' },
+  { id: 2, name: '金针菇', emoji: '🍄', color: '#FFF9C4', bg: 'rgba(255,249,196,0.25)' },
+  { id: 3, name: '豆腐泡', emoji: '🧈', color: '#FFE082', bg: 'rgba(255,224,130,0.25)' },
+  { id: 4, name: '虾滑',   emoji: '🦐', color: '#F48FB1', bg: 'rgba(244,143,177,0.25)' },
+  { id: 5, name: '鱼丸',   emoji: '🐟', color: '#81D4FA', bg: 'rgba(129,212,250,0.25)' },
+  { id: 6, name: '年糕',   emoji: '🍙', color: '#C8E6C9', bg: 'rgba(200,230,201,0.25)' },
 ];
 
 // --- Game State ---
@@ -1005,59 +1012,40 @@ function drawPot() {
   }
 }
 
-function drawIngredient(r, c, type, alpha = 1) {
-  const { x, y } = getGridPixel(r, c);
+function drawIngredientAt(ctx, x, y, type, size = 24, alpha = 1) {
   const ing = INGREDIENTS[type];
   if (!ing) return;
   ctx.globalAlpha = alpha;
-  ctx.shadowColor = 'rgba(0,0,0,0.3)';
-  ctx.shadowBlur = 4;
 
-  switch (ing.shape) {
-    case 'rect': // 蟹柳 - long red rectangle
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.fillRect(x - ing.w / 2 + 2, y - ing.h / 2 + 1, ing.w - 4, 3);
-      break;
-    case 'circle': // 牛肉丸 / 鱼丸
-      ctx.beginPath();
-      ctx.arc(x, y, ing.r, 0, Math.PI * 2);
-      ctx.fillStyle = ing.color;
-      ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(x - ing.r * 0.25, y - ing.r * 0.25, ing.r * 0.4, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    case 'thin': // 金针菇
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(x, y - ing.h / 2 + 3, 5, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    case 'square': // 豆腐泡 / 年糕
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
-      ctx.strokeStyle = ing.light;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x - ing.w / 2, y - ing.h / 2, ing.w, ing.h);
-      break;
-    case 'oval': // 虾滑
-      ctx.fillStyle = ing.color;
-      ctx.beginPath();
-      ctx.ellipse(x, y, ing.w / 2, ing.h / 2, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.ellipse(x - 3, y - 2, ing.w / 4, ing.h / 4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-  }
+  // Colored circle background
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.55, 0, Math.PI * 2);
+  ctx.fillStyle = ing.color;
+  ctx.fill();
+
+  // Inner highlight
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(x - size * 0.12, y - size * 0.12, size * 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.fill();
+
+  // Emoji
+  ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 3;
+  ctx.fillText(ing.emoji, x, y + 1);
   ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
+}
+
+function drawIngredient(r, c, type, alpha = 1) {
+  const { x, y } = getGridPixel(r, c);
+  drawIngredientAt(ctx, x, y, type, 26, alpha);
 }
 
 function drawIngredients() {
@@ -1090,69 +1078,20 @@ function drawIngredients() {
 function drawFallingFood() {
   if (!game.currentFood) return;
   const f = game.currentFood;
-  const ing = INGREDIENTS[f.type];
-  if (!ing) return;
-
-  ctx.shadowColor = 'rgba(255,200,0,0.3)';
-  ctx.shadowBlur = 10;
-
-  // Draw centered at pixel position
-  const size = 26;
-  const y = f.pixelY;
+  const size = 28;
   const x = f.pixelX;
+  const y = f.pixelY;
 
   // Glow
+  ctx.shadowColor = 'rgba(255,200,100,0.3)';
+  ctx.shadowBlur = 15;
   ctx.beginPath();
   ctx.arc(x, y, size, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,200,100,0.15)';
+  ctx.fillStyle = 'rgba(255,200,100,0.12)';
   ctx.fill();
-
-  // Draw ingredient
-  ctx.save();
-  ctx.translate(x, y);
-  // Draw at (0,0) local coordinates
-  switch (ing.shape) {
-    case 'rect':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.fillRect(-ing.w/2 + 2, -ing.h/2 + 1, ing.w - 4, 3);
-      break;
-    case 'circle':
-      ctx.beginPath();
-      ctx.arc(0, 0, ing.r, 0, Math.PI * 2);
-      ctx.fillStyle = ing.color; ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(-ing.r*0.25, -ing.r*0.25, ing.r*0.4, 0, Math.PI*2);
-      ctx.fill();
-      break;
-    case 'thin':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(0, -ing.h/2 + 3, 5, 0, Math.PI*2); ctx.fill();
-      break;
-    case 'square':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.strokeStyle = ing.light; ctx.lineWidth = 2;
-      ctx.strokeRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      break;
-    case 'oval':
-      ctx.fillStyle = ing.color;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, ing.w/2, ing.h/2, 0, 0, Math.PI*2);
-      ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.ellipse(-3, -2, ing.w/4, ing.h/4, 0, 0, Math.PI*2);
-      ctx.fill();
-      break;
-  }
-  ctx.restore();
   ctx.shadowBlur = 0;
+
+  drawIngredientAt(ctx, x, y, f.type, 30);
 }
 
 function drawNextFood() {
@@ -1171,58 +1110,13 @@ function drawNextFood() {
   ctx.fill();
 
   // Food preview above pot
-  const ing = INGREDIENTS[game.nextFood.type];
-  if (!ing) return;
   const px = gridX + centerCol * CELL_W + CELL_W / 2;
   const py = 50;
   const pulse = Math.sin(Date.now() / 300) * 3;
 
   ctx.shadowColor = 'rgba(255,200,100,0.4)';
   ctx.shadowBlur = 15 + pulse;
-
-  // Draw ingredient centered at px, py
-  ctx.save();
-  ctx.translate(px, py + pulse);
-  switch (ing.shape) {
-    case 'rect':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.fillRect(-ing.w/2 + 2, -ing.h/2 + 1, ing.w-4, 3);
-      break;
-    case 'circle':
-      ctx.beginPath();
-      ctx.arc(0, 0, ing.r, 0, Math.PI*2);
-      ctx.fillStyle = ing.color; ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(-ing.r*0.25, -ing.r*0.25, ing.r*0.4, 0, Math.PI*2); ctx.fill();
-      break;
-    case 'thin':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.arc(0, -ing.h/2+3, 5, 0, Math.PI*2); ctx.fill();
-      break;
-    case 'square':
-      ctx.fillStyle = ing.color;
-      ctx.fillRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      ctx.strokeStyle = ing.light; ctx.lineWidth = 2;
-      ctx.strokeRect(-ing.w/2, -ing.h/2, ing.w, ing.h);
-      break;
-    case 'oval':
-      ctx.fillStyle = ing.color;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, ing.w/2, ing.h/2, 0, 0, Math.PI*2);
-      ctx.fill();
-      ctx.fillStyle = ing.light;
-      ctx.beginPath();
-      ctx.ellipse(-3, -2, ing.w/4, ing.h/4, 0, 0, Math.PI*2);
-      ctx.fill();
-      break;
-  }
-  ctx.restore();
+  drawIngredientAt(ctx, px, py + pulse, game.nextFood.type, 32);
   ctx.shadowBlur = 0;
 
   // "点击下落" hint
